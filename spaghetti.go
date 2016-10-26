@@ -146,6 +146,8 @@ func main() {
 	results := make(chan result)
 
 	var wait_group sync.WaitGroup
+	// It's possible that spreading out this work across goroutines inherently isn't performant, but it's also possible that I'm doing this wrong
+	// So 1 for now!
 	const numSearchers = 1
 	wait_group.Add(numSearchers)
 
