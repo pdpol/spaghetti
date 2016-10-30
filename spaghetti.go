@@ -20,6 +20,14 @@ type result struct {
 	err      error
 }
 
+// Regexp pattern requires formatting with user input
+var target_pattern = ".*%v\\(.*\\)|.*%v\\.delay|.*%v\\.apply_async"
+
+// Compiled Regexps
+var python_source_re = regexp.MustCompile(`[a-z]*\.py$`)
+var decorator_re = regexp.MustCompile(`^@`)
+var function_def_re = regexp.MustCompile(`^\s*def\s.+:$`)
+
 // Declaring command-line flags
 var exclude_patterns string
 
@@ -39,7 +47,7 @@ func walkFiles(done <-chan struct{}, root string, exclude_patterns string) (<-ch
 			}
 
 			// Checking to see if the file ends in .py
-			is_python_source, err := regexp.MatchString(`[a-z]*\.py$`, path)
+			is_python_source := python_source_re.MatchString(path)
 
 			if err != nil {
 				return err
@@ -70,7 +78,7 @@ func walkFiles(done <-chan struct{}, root string, exclude_patterns string) (<-ch
 	return paths, errc
 }
 
-func searcher(done <-chan struct{}, target string, paths <-chan string, results chan<- result) {
+func searcher(done <-chan struct{}, target_re *regexp.Regexp, paths <-chan string, results chan<- result) {
 	for path := range paths {
 		f, err := os.Open(path)
 
@@ -81,19 +89,19 @@ func searcher(done <-chan struct{}, target string, paths <-chan string, results 
 		is_target_stub := false
 		for scanner.Scan() {
 			line := scanner.Text()
-			is_decorated, _ := regexp.MatchString(`^@`, line)
-			is_def, _ := regexp.MatchString(`^\s*def\s.+:$`, line)
+			is_decorated := decorator_re.MatchString(line)
+			is_def := function_def_re.MatchString(line)
 			if is_def || is_decorated {
 				if is_target_stub {
 					is_target_stub = false
-					buffer.WriteString("\n")
 					snippets_buffer.WriteString(buffer.String())
 				}
 
 				buffer.Reset()
 			}
+			is_target_call := target_re.MatchString(line)
 			// When true, we'll add this stub to snippets when we hit the next def
-			if strings.Contains(line, target) {
+			if is_target_call {
 				is_target_stub = true
 			}
 			buffer.WriteString(line)
@@ -135,6 +143,9 @@ func main() {
 		target = args[0]
 	}
 
+	formatted_target_pattern := fmt.Sprintf(target_pattern, target)
+	target_re := regexp.MustCompile(formatted_target_pattern)
+
 	pwd, _ := os.Getwd()
 
 	// Set up channel to alert searchers we're done
@@ -148,12 +159,12 @@ func main() {
 	var wait_group sync.WaitGroup
 	// It's possible that spreading out this work across goroutines inherently isn't performant, but it's also possible that I'm doing this wrong
 	// So 1 for now!
-	const numSearchers = 1
+	const numSearchers = 8
 	wait_group.Add(numSearchers)
 
 	for i := 0; i < numSearchers; i++ {
 		go func() {
-			searcher(done, target, paths, results)
+			searcher(done, target_re, paths, results)
 			wait_group.Done()
 		}()
 	}
@@ -164,6 +175,10 @@ func main() {
 	}()
 
 	for result := range results {
+		if result.err != nil {
+			fmt.Println(result.err)
+			return
+		}
 		fmt.Println(result.path)
 		fmt.Println(result.snippets)
 	}
